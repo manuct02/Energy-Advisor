@@ -106,7 +106,7 @@ class DatabaseManager:
     def get_recent_usage(self, hours: int=24):
         """ Obtiene el registro de uso más reciente """
         from datetime import datetime, timedelta
-        end_time= datetime.now
+        end_time= datetime.now()
         start_time= end_time - timedelta(hours=hours)
         return self.get_usage_by_date_range(start_time, end_time)
     
