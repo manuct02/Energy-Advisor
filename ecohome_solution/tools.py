@@ -50,7 +50,65 @@ def get_weather_forecast(location: str, days: int = 3) -> Dict[str, Any]:
             ]
         }
     """
-    # Mock weather API or call OpenWeatherMap or similar
+    def _clamp_int(x: int, lo: int, hi: int)-> int:
+        return max(lo, min(hi, x))
+    
+    def _mock_forecast(loc: str, d: int)-> Dict[str, Any]:
+        from datetime import timezone
+        import hashlib, math, random
+
+        now= datetime.now(timezone.utc)
+        seed_str = f"{loc.strip().lower()}|{now.strftime('%Y-%m-%d')}"
+        seed= int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:8], 16)
+        rng= random.Random(seed)
+
+        month= now.month
+        seasonal = {
+            1: 6, 2: 7, 3: 10, 4: 13, 5: 17, 6: 21,
+            7: 24, 8: 24, 9: 20, 10: 15, 11: 10, 12: 7
+        }[month]
+
+        loc_l= loc.lower()
+
+        if any(k in loc_l for k in ["oslo", "helsinki", "stockholm", "reykjavik"]):
+            seasonal -= 6
+        
+        if any(k in loc_l for k in ["madrid", "sevilla", "valencia", "barcelona", "lisbon"]):
+            seasonal += 3
+        
+        if any(k in loc_l for k in ["cairo", "dubai", "riyadh", "miami"]):
+            seasonal += 7
+
+        conditions = ["sunny", "partly_cloudy", "cloudy", "rainy"]
+        base_condition= rng.choices(conditions, weights= [35, 35, 20, 10], k=1)[0]
+
+        def solar_irradiance_wm2(hour_local: int, cloud_factor: float)-> float:
+            if hour_local<7 or hour_local>19:
+                return 0.0
+            
+            x= (hour_local-13)/4.0
+            clear_peak= 800.0
+            return max(0.0, clear_peak*math.exp(-(x*x))*cloud_factor)
+        
+        hourly= []
+
+        start= now.replace(minute= 0, second=0, microsecond=0)
+        total_hours= 24*d
+
+        for h in range(total_hours):
+            t= start + timedelta(hours=h)
+            hour= t.hour
+
+            diurnal= 4.5 * math.sin((hour - 6)*math.pi/12)
+            noise= rng.uniform(-0.6, 0.6)
+            temp_c= seasonal + diurnal + noise
+
+
+            if base_condition== "sunny":
+                cloud= rng.uniform(0.0, 0.2)
+
+
+
     
     return 
 
