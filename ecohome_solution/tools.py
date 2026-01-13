@@ -106,11 +106,198 @@ def get_weather_forecast(location: str, days: int = 3) -> Dict[str, Any]:
 
             if base_condition== "sunny":
                 cloud= rng.uniform(0.0, 0.2)
+            elif base_condition=="partly_cloudy":
+                cloud= rng.uniform(0.2, 0.5)
+            elif base_condition== "cloudy":
+                cloud= rng.uniform(0.5, 0.85)
+            else: #rainy
+                cloud= rng.uniform(0.7, 1.0)
+            
+            cloud_factor= 1.0 - cloud
+            irr= solar_irradiance_wm2(hour, cloud_factor=cloud_factor)
 
-
-
+            cond= base_condition
+            if rng.random()< 0.08:
+                cond= rng.choice(conditions)
+            
+            hourly.append({
+                "timestamp": t.isoformat(),
+                "hour":hour,
+                "temperature_c": round(temp_c, 1),
+                "condition": cond,
+                "humidity": int(_clamp_int(int(rng.gauss(55,12)), 20, 95)),
+                "wind_speed": round(max(0.0, rng.gauss(55,12)), 1),
+                "solar_irradiance": round(irr, 1)
+            })
+        
+        current= hourly[0].copy()
+        current.pop("timestamp", None)
+        current.pop("hour", None)
     
-    return 
+        return {
+            "location": loc,
+            "forecast_days":d,
+            "source":"mock",
+            "current": current,
+            "hourly": hourly
+
+        }
+    
+    # ---------- validate inputs ----------
+    try:
+        if not isinstance(location, str) or not location.strip():
+            return {"error": "location must be a non-empty string"}
+        if not isinstance(days, int):
+            return {"error": "days must be an integer"}
+        days = _clamp_int(days, 1, 7)
+    except Exception as e:
+        return {"error": f"invalid inputs: {e}"}
+
+    # ---------- try OpenWeatherMap ----------
+    import os
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        # No key → fallback mock
+        return _mock_forecast(location, days)
+
+    # Use requests if available, else urllib
+    try:
+        import requests  # type: ignore
+        http_get = "requests"
+    except Exception:
+        requests = None
+        http_get = "urllib"
+
+    try:
+        # 1) Geocoding: location -> lat/lon
+        geo_url = "OPENAI_BASE_URL"
+        geo_params = {"q": location, "limit": 1, "appid": api_key}
+
+        if requests:
+            geo_resp = requests.get(geo_url, params=geo_params, timeout=10)
+            geo_resp.raise_for_status()
+            geo = geo_resp.json()
+        else:
+            import urllib.parse, urllib.request, json
+            url = geo_url + "?" + urllib.parse.urlencode(geo_params)
+            with urllib.request.urlopen(url, timeout=10) as r:
+                geo = json.loads(r.read().decode("utf-8"))
+
+        if not geo:
+            return {"error": f"location not found: {location}"}
+
+        lat = geo[0]["lat"]
+        lon = geo[0]["lon"]
+        resolved_name = ", ".join([x for x in [geo[0].get("name"), geo[0].get("state"), geo[0].get("country")] if x])
+
+        # 2) Forecast (One Call 3.0)
+        # Nota: One Call 3.0 suele requerir plan/permiso; si falla, cae a mock.
+        onecall_url = "https://api.openweathermap.org/data/3.0/onecall"
+        onecall_params = {
+            "lat": lat,
+            "lon": lon,
+            "exclude": "minutely,alerts",
+            "units": "metric",
+            "appid": api_key
+        }
+
+        if requests:
+            oc_resp = requests.get(onecall_url, params=onecall_params, timeout=10)
+            oc_resp.raise_for_status()
+            oc = oc_resp.json()
+        else:
+            import urllib.parse, urllib.request, json
+            url = onecall_url + "?" + urllib.parse.urlencode(onecall_params)
+            with urllib.request.urlopen(url, timeout=10) as r:
+                oc = json.loads(r.read().decode("utf-8"))
+
+        # Build response: we want ~24*days hours
+        hourly_raw = oc.get("hourly", [])
+        take = min(len(hourly_raw), 24 * days)
+
+        hourly = []
+        for i in range(take):
+            h = hourly_raw[i]
+            # OWM gives "dt" (unix), "temp", "humidity", "wind_speed", "clouds", "uvi", "weather"
+            ts = datetime.utcfromtimestamp(h["dt"]).isoformat() + "Z"
+            clouds = float(h.get("clouds", 0)) / 100.0  # 0..1
+            # crude irradiance estimate: scale with daylight proxy (uvi) and clouds
+            uvi = float(h.get("uvi", 0.0))
+            # Map uvi (0..~10) -> peak W/m2 rough (0..900), then reduce by clouds
+            irr = max(0.0, min(900.0, uvi * 90.0)) * (1.0 - 0.75 * clouds)
+
+            cond = "unknown"
+            w = h.get("weather") or []
+            if w and isinstance(w, list):
+                main = (w[0].get("main") or "").lower()
+                if "clear" in main:
+                    cond = "sunny"
+                elif "cloud" in main:
+                    cond = "cloudy" if clouds > 0.5 else "partly_cloudy"
+                elif "rain" in main or "drizzle" in main or "thunder" in main:
+                    cond = "rainy"
+                else:
+                    cond = main or "unknown"
+
+            temp_c = float(h.get("temp"))
+            humidity = int(h.get("humidity", 0))
+            wind = float(h.get("wind_speed", 0.0))
+
+            hour_localish = datetime.utcfromtimestamp(h["dt"]).hour
+
+            hourly.append({
+                "timestamp": ts,
+                "hour": hour_localish,
+                "temperature_c": round(temp_c, 1),
+                "condition": cond,
+                "humidity": humidity,
+                "wind_speed": round(wind, 1),
+                "solar_irradiance": round(irr, 1),
+            })
+
+        # current from "current"
+        cur = oc.get("current", {})
+        cur_clouds = float(cur.get("clouds", 0)) / 100.0
+        cur_uvi = float(cur.get("uvi", 0.0))
+        cur_irr = max(0.0, min(900.0, cur_uvi * 90.0)) * (1.0 - 0.75 * cur_clouds)
+
+        cur_cond = "unknown"
+        cw = cur.get("weather") or []
+        if cw and isinstance(cw, list):
+            main = (cw[0].get("main") or "").lower()
+            if "clear" in main:
+                cur_cond = "sunny"
+            elif "cloud" in main:
+                cur_cond = "cloudy" if cur_clouds > 0.5 else "partly_cloudy"
+            elif "rain" in main or "drizzle" in main or "thunder" in main:
+                cur_cond = "rainy"
+            else:
+                cur_cond = main or "unknown"
+
+        current = {
+            "temperature_c": round(float(cur.get("temp", hourly[0]["temperature_c"] if hourly else 0.0)), 1),
+            "condition": cur_cond,
+            "humidity": int(cur.get("humidity", hourly[0]["humidity"] if hourly else 0)),
+            "wind_speed": round(float(cur.get("wind_speed", hourly[0]["wind_speed"] if hourly else 0.0)), 1),
+            "solar_irradiance": round(cur_irr, 1),
+        }
+
+        return {
+            "location": resolved_name or location,
+            "forecast_days": days,
+            "source": "openweathermap",
+            "http_client": http_get,
+            "current": current,
+            "hourly": hourly
+        }
+
+    except Exception as e:
+        # If API fails for any reason, fallback so agent still works
+        fallback = _mock_forecast(location, days)
+        fallback["source"] = "mock_fallback"
+        fallback["api_error"] = str(e)
+        return fallback
+ 
 
 # TODO: Implement get_electricity_prices tool
 @tool
