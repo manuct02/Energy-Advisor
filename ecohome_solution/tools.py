@@ -329,13 +329,47 @@ def get_electricity_prices(date: str = None) -> Dict[str, Any]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     
-    # Mock electricity pricing - in real implementation, this would call a pricing API
-    # Use a base price per kWh    
-    # Then generate hourly rates with peak/off-peak pricing
-    # Peak normally between 6 and 22...
-    # demand_charge should be 0 if off-peak
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return {"error":"date mast be in YYYY-MM-DD format"}
+    
+    base_price= 0.12 #USD/kWh
 
-    return 
+    hourly_rates= []
+    for hour in range(24):
+        if 6<= hour<= 22:
+            period= "peak"
+            
+            if 6<= hour < 12:
+                multiplier= 1.3
+            elif 12<= hour < 18:
+                multiplier= 1.5
+            elif 18<= hour<=22:
+                multiplier= 1.8
+            demand_charge= 0.05
+        
+        else :
+            period= "off_peak"
+            multiplier= 0.75
+            demand_charge= 0.0
+        
+        rate= base_price * multiplier
+
+        hourly_rates.append({
+            "hour":hour,
+            "rate": round(rate, 4),
+            "period": period,
+            "demand_charge": round(demand_charge, 4),
+        })
+
+    return {
+        "date": date,
+        "pricing_type": "time_of_use",
+        "currency": "USD",
+        "unit": "per_kwh",
+        "hourly_rates": hourly_rates
+    }
 
 @tool
 def query_energy_usage(start_date: str, end_date: str, device_type: str = None) -> Dict[str, Any]:
